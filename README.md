@@ -1,7 +1,7 @@
 mimic
 =====
 
-This unikernel mimics a service in another network by acquiring a local IP address, opening the same ports and then forwarding all traffic to the remote host through a SOCKS server.
+This unikernel mimics a host in another network by acquiring a local IP address, opening the same ports and then forwarding all traffic to the remote host through a SOCKS server.
 
 ### Build
 ```
