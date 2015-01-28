@@ -23,8 +23,8 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
   module Socks = Socks.SOCKS4 (Stack)
 
   type flowpair = {
-    client : Stack.Tcp.flow;
-    socks : Stack.Tcp.flow;
+    client : Stack.Tcpv4.flow;
+    socks : Stack.Tcpv4.flow;
   }
 
   type list_of_flowpairs = flowpair list
