@@ -1,0 +1,1 @@
+sudo xl create unikernel.xl -c 'extra="socks_ip=192.168.1.105 socks_port=8888 dest_ip=192.168.1.104 dest_port=80 ip=192.168.1.2 netmask=255.255.255.0 gw=192.168.1.1"'
