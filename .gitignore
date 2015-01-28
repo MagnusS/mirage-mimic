@@ -3,4 +3,5 @@ _build
 log
 *.xl
 *.xe
-*.sml
+*.xml
+main.xl
