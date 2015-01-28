@@ -111,6 +111,20 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
           read_and_forward context.flowpairs c socks_flow input_flow
         ]
 
+  let connect_tcp c s dest_ip dest_port flowpairs input_flow =
+    C.log c "New incoming connection - Forwarding connection through TCP";
+    C.log c (Printf.sprintf "Establishing connection to %s:%d..." (Ipaddr.V4.to_string dest_ip) dest_port);
+    Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= fun dest_con -> 
+    match dest_con with 
+    | `Error e -> C.log c (Printf.sprintf "Unable to connect to TCP server. Closing input flow. Error %s" (error_message e)); Stack.T.close input_flow
+    | `Ok output_flow -> 
+      C.log c (Printf.sprintf "Connected to TCP ip %s port %d, forwarding..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
+      flowpairs := [{incoming=input_flow; outgoing=output_flow}] @ !(flowpairs);
+      Lwt.choose [
+          read_and_forward flowpairs c input_flow output_flow;
+          read_and_forward flowpairs c output_flow input_flow
+        ]
+
   (* from mirage-skeleton *)
   let or_error name fn t =
     fn t
@@ -122,15 +136,18 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     (* show help on boot *)
     Printf.printf "*** mirage-mimic supported boot options ***\n";
     Printf.printf "Accepted parameters in extra= are: \n";
-    Printf.printf "\tmode=[tcp,socks]\n";
+    Printf.printf "\tforward_mode=[tcp,socks,tls]\n";
+    Printf.printf "\tlisten_mode=[tcp,tls]\n";
     Printf.printf "\tip=[local ip]\n";
     Printf.printf "\tnetmask=[local netmask]\n";
     Printf.printf "\tgw=[local gw]\n";
     Printf.printf "\tports=[port1,...portN] (ports to listen to)\n";
-    Printf.printf "In socks mode:\n";
+    Printf.printf "In socks forward mode:\n";
     Printf.printf "\tsocks_ip=[ipv4]\n";
     Printf.printf "\tsocks_port=[port]\n";
     Printf.printf "\tdest_ip=[destination ipv4 relative to socks endpoint]\n";
+    Printf.printf "In tcp forward mode:\n";
+    Printf.printf "\tdest_ip=[destination ipv4 relative to mimic]\n";
     Printf.printf "*****\n%!"; 
 
     Bootvar.create >>= fun bootvar ->
@@ -145,31 +162,41 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
       V1_LWT.mode = `IPv4 (ip, netmask, [gw]);
     } in
     or_error "stack" Stack.connect stack_config >>= fun s ->
-    (* set up context, socks config etc *)
     let dest_ports = 
       let ports = Re_str.(split (regexp_string ",") (Bootvar.get bootvar "ports")) in
       List.map int_of_string ports
     in
-    let mode = 
-            let mode_str = Bootvar.get bootvar "mode" in
+    let forward_mode = 
+            let mode_str = (String.lowercase (Bootvar.get bootvar "forward_mode")) in
             (if mode_str = "tcp" then `TCP 
             else if mode_str = "socks" then `SOCKS 
             else `UNKNOWN) in
-    match mode with 
-    | `SOCKS -> begin
-            let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-            let socks_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip") in
-            let socks_port = int_of_string (Bootvar.get bootvar "socks_port") in
-            let context : socks_t = { socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip; dest_ports = dest_ports; flowpairs = ref [] } in
-            (* listen to ports from dest_ports *)
-            let begin_listen port = Stack.listen_tcpv4 s ~port:port (connect_socks context c s port); Printf.printf "Listening to port %d\n" port in
-            List.iter begin_listen (context.dest_ports);
-            Stack.listen s
-    end
+    let connect_f c s port = begin
+            match forward_mode with 
+            | `SOCKS -> begin
+                    (* set up context, socks config etc *)
+                    let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
+                    let socks_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip") in
+                    let socks_port = int_of_string (Bootvar.get bootvar "socks_port") in
+                    let context : socks_t = { socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip; dest_ports = dest_ports; flowpairs = ref [] } in
+                    fun flow -> connect_socks context c s port flow
+            end
+            | `TCP ->  
+                    let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
+                    let flowpairs = ref [] in
+                    fun flow -> connect_tcp c s dest_ip port flowpairs flow
+            | `TLS -> (fun flow -> fail (Failure "TLS forwarding mode not supported"))
+            | `UNKNOWN -> (fun flow -> fail (Failure "Forwarding mode unknown or the boot parameter 'forward_mode' was not set"))
+    end in
+    let listen_mode = `TCP in
+    match listen_mode with
     | `TCP -> begin
-            Printf.printf "TCP not supported yet.%!"; return_unit
-    end
-    | `UNKNOWN -> begin
-            Printf.printf "Mode unknown or mode boot parameter not set%!."; return_unit
-    end
+                    (* listen to ports from dest_ports *)
+                    let begin_listen port = Stack.listen_tcpv4 s ~port:port (connect_f c s port); Printf.printf "Listening to port %d\n" port in
+                    List.iter begin_listen (dest_ports);
+                    Stack.listen s
+              end
+    | `TLS -> begin
+                    fail (Failure "TLS listen mode not supported.")
+              end
 end
