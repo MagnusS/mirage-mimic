@@ -23,8 +23,8 @@ let stack =
   | `Socket, _ -> socket_stackv4 default_console [Ipaddr.V4.any]
 
 let () =
-  add_to_ocamlfind_libraries ["cstruct"; "cstruct.syntax"; "re"; "re.str"; "tcpip.ethif"; "tcpip.tcp"; "tcpip.udp"; "tcpip.stack-direct"; "mirage-http" ];
-  add_to_opam_packages ["cstruct"; "tcpip"; "re"; "mirage-http"];
+  add_to_ocamlfind_libraries ["cstruct"; "cstruct.syntax"; "re"; "re.str"; "tcpip.ethif"; "tcpip.tcp"; "tcpip.udp"; "tcpip.stack-direct" ];
+  add_to_opam_packages ["cstruct"; "tcpip"; "re"];
   register "unikernel" [
     main $ default_console $ stack
   ]
