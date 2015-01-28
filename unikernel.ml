@@ -120,7 +120,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
 
   let start c n = 
     Printf.printf "Accepted parameters in extra= are: socks_ip=[ipv4] socks_port=[port] dest_ip=[ipv4 relative to socks endpoint] dest_ports=[port1,port2...] ip=[local ip] netmask=[local netmask] gw=[local gw]\n";
-    let bootvar = Bootvar.create in
+    Bootvar.create >>= fun bootvar ->
     let ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip") in
     let netmask = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
     let gw = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in

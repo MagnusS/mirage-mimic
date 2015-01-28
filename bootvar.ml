@@ -10,7 +10,10 @@ type t = { cmd_line : string;
 
 (* read boot parameter line and store in assoc list - expected format is "key1=val1 key2=val2" *)
 let create = 
-  let cmd_line = OS.Start_info.((get ()).cmd_line) in
+  OS.Xs.make () >>= fun client ->
+  OS.Xs.(immediate client (fun x -> read x "vm")) >>= fun vm ->
+  OS.Xs.(immediate client (fun x -> read x (vm^"/image/cmdline"))) >>= fun cmd_line ->
+  (*let cmd_line = OS.Start_info.((get ()).cmd_line) in*)
   Printf.printf "OS cmd_line is %s\n" cmd_line;
   let entries = Re_str.(split (regexp_string " ") cmd_line) in
   let vartuples =
@@ -19,7 +22,7 @@ let create =
         | [a;b] -> Printf.printf "%s=%s\n" a b ; (a,b)
         | _ -> raise (Failure "malformed boot parameters")) entries
   in
-  { cmd_line = cmd_line; parameters = vartuples}
+  Lwt.return { cmd_line = cmd_line; parameters = vartuples}
 
 (* get boot parameter *)
 let get t parameter = 
