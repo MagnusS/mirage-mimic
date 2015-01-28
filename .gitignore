@@ -1,0 +1,9 @@
+Makefile
+_build
+log
+*.xl
+*.xe
+*.xml
+main.xl
+*.xen
+*.elf

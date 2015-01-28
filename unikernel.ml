@@ -15,16 +15,16 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
   module Stack = struct
     module E = Ethif.Make(Netif)
     module I = Ipv4.Make(E)
-    module U = Udpv4.Make(I)
-    module T = Tcpv4.Flow.Make(I)(OS.Time)(Clock)(Random)
+    module U = Udp.Make(I)
+    module T = Tcp.Flow.Make(I)(OS.Time)(Clock)(Random)
     module S = Tcpip_stack_direct.Make(C)(OS.Time)(Random)(Netif)(E)(I)(U)(T)
     include S
   end
   module Socks = Socks.SOCKS4 (Stack)
 
   type flowpair = {
-    client : Stack.TCPV4.flow;
-    socks : Stack.TCPV4.flow;
+    client : Stack.T.flow;
+    socks : Stack.T.flow;
   }
 
   type list_of_flowpairs = flowpair list
@@ -52,7 +52,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
       if (hd.client == fp.client) && (hd.socks == fp.socks) then new_tl else hd :: new_tl
 
 
-  let rec find_flowpairs_by_flow (flowpairs : list_of_flowpairs) (flow : Stack.TCPV4.flow)  =
+  let rec find_flowpairs_by_flow (flowpairs : list_of_flowpairs) (flow : Stack.T.flow)  =
     match flowpairs with
     | [] -> []
     | hd :: tl -> 
@@ -68,8 +68,8 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     | hd :: tl -> 
       context.flowpairs := (drop_flowpair !(context.flowpairs) hd);
       Lwt.join [ 
-        Stack.TCPV4.close hd.client ;
-        Stack.TCPV4.close hd.socks ] >>= fun () ->
+        Stack.T.close hd.client ;
+        Stack.T.close hd.socks ] >>= fun () ->
       report_and_close_pairs context c tl message
 
   let report_and_close_flow context c flow message =
@@ -80,14 +80,14 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     | l -> report_and_close_pairs context c l "Flow pair found - closing..."
 
   let write_with_check context c flow buf =
-    Stack.TCPV4.write flow buf >>= fun result -> 
+    Stack.T.write flow buf >>= fun result -> 
     match result with 
     | `Eof -> report_and_close_flow context c flow "Unable to write to flow (eof)"
     | `Error e -> report_and_close_flow context c flow (error_message e)
     | `Ok _ -> Lwt.return_unit
 
   let rec read_and_forward context c input_flow output_flow  =
-    Stack.TCPV4.read input_flow >>= fun result -> 
+    Stack.T.read input_flow >>= fun result -> 
     match result with  
     | `Eof -> report_and_close_flow context c input_flow "Closing connection (eof)"
     | `Error e -> report_and_close_flow context c input_flow (error_message e)
@@ -95,9 +95,9 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
 
   let connect context c s dest_server_port input_flow =
     C.log c "New incoming connection - Forwarding connection through SOCKS";
-    Stack.TCPV4.create_connection (Stack.tcpv4 s) (context.socks_ip, context.socks_port) >>= fun socks_con -> 
+    Stack.T.create_connection (Stack.tcpv4 s) (context.socks_ip, context.socks_port) >>= fun socks_con -> 
     match socks_con with 
-    | `Error e -> C.log c (Printf.sprintf "Unable to connect to SOCKS server. Closing input flow. Error %s" (error_message e)); Stack.TCPV4.close input_flow
+    | `Error e -> C.log c (Printf.sprintf "Unable to connect to SOCKS server. Closing input flow. Error %s" (error_message e)); Stack.T.close input_flow
     | `Ok socks_flow -> 
       C.log c (Printf.sprintf "Connected to SOCKS ip %s port %d" (Ipaddr.V4.to_string (context.socks_ip)) context.socks_port);
       context.flowpairs := [{client=input_flow; socks=socks_flow}] @ !(context.flowpairs);
