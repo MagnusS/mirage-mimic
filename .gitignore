@@ -5,3 +5,5 @@ log
 *.xe
 *.xml
 main.xl
+*.xen
+*.elf
