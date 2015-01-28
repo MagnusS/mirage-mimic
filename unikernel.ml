@@ -142,7 +142,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     in
     let context : t = { socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip; dest_ports = dest_ports; flowpairs = ref [] } in
     (* listen to ports from dest_ports *)
-    let begin_listen port = Stack.listen_Tcp s ~port:port (connect context c s port); Printf.printf "Listening to port %d\n" port in
+    let begin_listen port = Stack.listen_tcpv4 s ~port:port (connect context c s port); Printf.printf "Listening to port %d\n" port in
     List.iter begin_listen (context.dest_ports);
     Stack.listen s
 
