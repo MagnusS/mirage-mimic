@@ -95,7 +95,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
 
   let connect context c s dest_server_port input_flow =
     C.log c "New incoming connection - Forwarding connection through SOCKS";
-    Stack.T.create_connection (Stack.T s) (context.socks_ip, context.socks_port) >>= fun socks_con -> 
+    Stack.T.create_connection (Stack.tcp s) (context.socks_ip, context.socks_port) >>= fun socks_con -> 
     match socks_con with 
     | `Error e -> C.log c (Printf.sprintf "Unable to connect to SOCKS server. Closing input flow. Error %s" (error_message e)); Stack.T.close input_flow
     | `Ok socks_flow -> 
