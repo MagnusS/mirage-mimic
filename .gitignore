@@ -7,3 +7,4 @@ log
 main.xl
 *.xen
 *.elf
+static1.*

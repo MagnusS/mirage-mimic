@@ -1,7 +1,24 @@
 mimic
 =====
 
-This unikernel mimics a host in another network by acquiring a local IP address, opening the same ports and then forwarding all traffic to the remote host through a SOCKS server.
+This unikernel mimics a host in another network by acquiring a local IP address, opening the same ports and then forwarding all traffic to the remote host through a TCP connection, SOCKS server or TLS connection.
+
+This code is experimental. Opam setup:
+
+```
+mirage@cubieboard2:~/mirage-mimic$ opam pin
+conduit.0.7.1             path     /home/mirage/ocaml-conduit
+ctypes.dev                path     /home/mirage/ocaml-ctypes
+mirage.2.2.0              path     /home/mirage/mirage
+nocrypto.0.3.0            path     /home/mirage/ocaml-nocrypto
+tls.0.3.0                 path     /home/mirage/ocaml-tls
+mirage@cubieboard2:~/mirage-mimic$ opam remote
+  20 [git]          dev     git://github.com/mirage/mirage-dev
+  10 [git]   mirage-dev     git://github.com/mirage/mirage-dev
+   0 [local]    default     /home/mirage/git/opam-repository
+```
+
++ http://github.com/mirage/ocaml-conduit/pull/41 
 
 ### Build
 ```
