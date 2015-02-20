@@ -260,11 +260,6 @@ struct
     let flowpairs = ref [] in
     connect_tls_fn c s kv dest_ip port flowpairs flow
 
-  type accept =
-    [ `Socks of (Ipaddr.V4.t * int * Ipaddr.V4.t)
-    | `Tcp of Ipaddr.V4.t
-    | `TLS of Ipaddr.V4.t * KV.t ]
-
   let listen_mode bootvar =
     let mode_str = String.lowercase (Bootvar.get bootvar "listen_mode") in
     match mode_str with
