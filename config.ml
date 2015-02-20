@@ -18,5 +18,5 @@ let () =
   add_to_ocamlfind_libraries ["cstruct"; "cstruct.syntax"; "re"; "re.str"; "tcpip.ethif"; "tcpip.tcp"; "tcpip.udp"; "tcpip.stack-direct"; "mirage-clock-" ^ platform; "tls"; "tls.mirage"];
   add_to_opam_packages ["cstruct"; "tcpip"; "re"; "mirage-clock-" ^ platform; "tls"  ];
   register "unikernel" [
-    main $ default_console $ tap0 $ default_entropy $ disk 
+    main $ default_console $ tap0 $ default_entropy $ disk
   ]
