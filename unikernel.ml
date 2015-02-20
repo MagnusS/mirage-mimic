@@ -48,6 +48,7 @@ struct
   module X509 = Tls_mirage.X509 (KV) (Clock)
 
   let log c fmt = Printf.ksprintf (C.log c) fmt
+  let fail fmt = Printf.ksprintf (fun str -> Lwt.fail (Failure str)) fmt
 
   module Flow = struct
 
@@ -241,8 +242,8 @@ struct
   (* from mirage-skeleton *)
   let or_error name fn t =
     fn t >>= function
-    | `Error e -> fail (Failure ("Error starting " ^ name))
-    | `Ok t -> return t
+    | `Error e -> fail "Error starting %s" name
+    | `Ok t    -> return t
 
   let connect_socks ~socks_ip ~socks_port ~dest_ip ~dest_ports c s port flow =
     (* set up context, socks config etc *)
@@ -261,20 +262,34 @@ struct
     connect_tls_fn c s kv dest_ip port flowpairs flow
 
   let listen_mode bootvar =
-    let mode_str = String.lowercase (Bootvar.get bootvar "listen_mode") in
+    let mode_str =
+      try Some (String.lowercase (Bootvar.get bootvar "listen_mode"))
+      with Not_found -> None
+    in
     match mode_str with
-    | "tcp" -> `TCP
-    | "tls" -> `TLS
-    | "nat" -> `NAT
-    | s -> `UNKNOWN s
+    | Some "tcp" -> `TCP
+    | Some "tls" -> `TLS
+    | Some "nat" -> `NAT
+    | Some s     -> `UNKNOWN s
+    | None       -> `NOT_SET
 
   let forward_mode bootvar =
-    let mode_str = String.lowercase (Bootvar.get bootvar "forward_mode") in
+    let mode_str =
+      try Some (String.lowercase (Bootvar.get bootvar "forward_mode"))
+      with Not_found -> None
+    in
     match mode_str with
-    | "tcp" -> `TCP
-    | "socks" -> `SOCKS
-    | "tls" -> `TLS
-    | _ -> `UNKNOWN
+    | Some "tcp"   -> `TCP
+    | Some "socks" -> `SOCKS
+    | Some "tls"   -> `TLS
+    | Some s       -> `UNKNOWN s
+    | None         -> `NOT_SET
+
+  let dest_ports bootvar =
+    let ports =
+      Re_str.(split (regexp_string ",") (Bootvar.get bootvar "ports"))
+    in
+    List.map int_of_string ports
 
   let connect c s port dest_ports kv bootvar flow =
     let ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
@@ -286,11 +301,10 @@ struct
       let socks_ip = socks_ip () in
       let socks_port = socks_port () in
       connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port flow
-    | `TCP   -> connect_tcp ~dest_ip c s port flow
-    | `TLS   -> connect_tls ~dest_ip ~kv c s port flow
-    | `UNKNOWN ->
-        fail (Failure "Forwarding mode unknown or the boot parameter \
-                       'forward_mode' was not set")
+    | `TCP -> connect_tcp ~dest_ip c s port flow
+    | `TLS -> connect_tls ~dest_ip ~kv c s port flow
+    | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
+    | `NOT_SET   -> fail "'forward_mode' is not set"
 
   let start c n_in n_out e kv =
     TLS.attach_entropy e >>= fun () ->
@@ -316,21 +330,15 @@ struct
     Printf.printf "*****\n%!";
 
     Bootvar.create >>= fun bootvar ->
-    let ip_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip") in
-    let ip_out =
-      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip-out")
-      with Not_found -> ip_in
+    let ips name =
+      let ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
+      let ip_in = ip name in
+      let ip_out = try ip (name ^ "-out") with Not_found -> ip_in in
+      ip_in, ip_out
     in
-    let netmask_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
-    let netmask_out =
-      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask-out")
-      with Not_found -> netmask_in
-    in
-    let gw_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in
-    let gw_out =
-      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw-out")
-      with Not_found -> gw_in
-    in
+    let ip_in, ip_out = ips "ip" in
+    let netmask_in, netmask_out = ips "netmask" in
+    let gw_in, gw_out = ips "gw" in
     let stack_config1 = {
       V1_LWT.name = "incoming-stack";
       V1_LWT.console = c;
@@ -345,12 +353,6 @@ struct
     } in
     or_error "stack" Stack.connect stack_config1 >>= fun s1 ->
     or_error "stack" Stack.connect stack_config2 >>= fun s2 ->
-    let dest_ports =
-      let ports =
-        Re_str.(split (regexp_string ",") (Bootvar.get bootvar "ports"))
-      in
-      List.map int_of_string ports
-    in
     match listen_mode bootvar with
     | `NAT -> begin
         let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
@@ -367,6 +369,7 @@ struct
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
+        let dest_ports = dest_ports bootvar in
         let begin_listen port =
           Stack.listen_tcpv4 s1 ~port:port
             (fun flow -> connect c s2 port dest_ports kv bootvar (`TCP flow));
@@ -378,16 +381,18 @@ struct
     | `TLS -> begin
         X509.certificate kv `Default >>= fun cert ->
         let conf = Tls.Config.server ~certificates:(`Single cert) () in
+        let dest_ports = dest_ports bootvar in
         (* listen to ports from dest_ports *)
         let begin_listen port =
           Stack.listen_tcpv4 s1 ~port:port (fun flow ->
               TLS.server_of_flow conf flow >>= function
               |  `Ok tls -> connect c s2 port dest_ports kv bootvar (`TLS tls)
-              | `Error _ -> fail Not_found);
+              | `Error e  -> fail "TLS error: %s" (Flow.error_message e));
           Printf.printf "Listening to TLS, port %d\n" port
         in
         List.iter begin_listen (dest_ports);
         Stack.listen s1
       end
-    | `UNKNOWN s -> raise (Failure (s ^ ": listen mode unknown"))
+    | `UNKNOWN s -> fail "%s: listen mode unknown" s
+    | `NOT_SET   -> fail "'listen_mode' not set"
 end
