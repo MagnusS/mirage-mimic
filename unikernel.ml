@@ -285,6 +285,14 @@ struct
     | Some s       -> `UNKNOWN s
     | None         -> `NOT_SET
 
+  let string_of_mode = function
+    | `TCP       -> "tcp"
+    | `SOCKS     -> "socks"
+    | `TLS       -> "tls"
+    | `NAT       -> "nat"
+    | `UNKNOWN s -> s
+    | `NOT_SET   -> "<not set>"
+
   let dest_ports bootvar =
     let ports =
       Re_str.(split (regexp_string ",") (Bootvar.get bootvar "ports"))
@@ -361,7 +369,8 @@ struct
         begin match forward_mode bootvar with
           | `TLS -> tls_flow c s2 dest_ip port kv
           | `TCP -> tcp_flow c s2 dest_ip port
-          | _ -> failwith "invalid forward mode for NAT mode."
+          | x    -> fail "%s: invalid forward mode the NAT mode."
+                      (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
         | `TLS _ | `TCP _ as flow ->
