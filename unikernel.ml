@@ -40,11 +40,11 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
   module TLS  = Tls_mirage.Make (Stack.T) (E)
   module X509 = Tls_mirage.X509 (KV) (Clock)
 
-  type mega_flow = [`TLS of TLS.flow | `TCP of Stack.T.flow]
+  type flow = [`TLS of TLS.flow | `TCP of Stack.T.flow]
 
   type flowpair = {
-    incoming : mega_flow;
-    outgoing : mega_flow
+    incoming : flow;
+    outgoing : flow
   }
 
   type list_of_flowpairs = flowpair list
