@@ -28,10 +28,13 @@ open Re_str
 *)
 
 module Main
-    (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_RO) =
+    (C: V1_LWT.CONSOLE)
+    (Netif : V1_LWT.NETWORK)
+    (Netif_ : V1_LWT.NETWORK)
+    (E : ENTROPY)
+    (KV : KV_RO) =
 struct
 
-  (* Manually set up stack so we can request IP in start function *)
   module Stack = struct
     module E = Ethif.Make(Netif)
     module I = Ipv4.Make(E)
@@ -91,31 +94,30 @@ struct
     outgoing : Flow.flow;
   }
 
-  type list_of_flowpairs = flowpair list
-
   type socks_t = {
     socks_ip : Ipaddr.V4.t;
     socks_port : int;
     dest_ip : Ipaddr.V4.t;
     dest_ports : int list;
-    flowpairs : list_of_flowpairs ref
+    flowpairs : flowpair list ref
   }
 
-  (* from RWO *)
-  let rec drop_flowpair (flowpairs : list_of_flowpairs) (fp : flowpair) =
+  let rec drop_flowpair flowpairs fp =
     match flowpairs with
     | [] -> []
     | hd :: tl ->
       let new_tl = drop_flowpair tl fp in
-      if (hd.incoming == fp.incoming) && (hd.outgoing == fp.outgoing) then
-        new_tl else hd :: new_tl
+      if hd.incoming == fp.incoming && hd.outgoing == fp.outgoing then
+        new_tl
+      else
+        hd :: new_tl
 
-  let rec find_flowpairs_by_flow (flowpairs : list_of_flowpairs) flow  =
+  let rec find_flowpairs_by_flow flowpairs flow  =
     match flowpairs with
     | [] -> []
     | hd :: tl ->
-      if (hd.incoming == flow) || (hd.outgoing == flow) then
-        [hd] @ find_flowpairs_by_flow tl flow
+      if hd.incoming == flow || hd.outgoing == flow then
+        hd :: find_flowpairs_by_flow tl flow
       else
         find_flowpairs_by_flow tl flow
 
@@ -125,9 +127,7 @@ struct
     | [] -> Lwt.return_unit
     | hd :: tl ->
       flowpairs := (drop_flowpair !(flowpairs) hd);
-      Lwt.join [
-        Flow.close hd.incoming ;
-        Flow.close hd.outgoing ] >>= fun () ->
+      Lwt.join [ Flow.close hd.incoming ; Flow.close hd.outgoing ] >>= fun () ->
       report_and_close_pairs flowpairs c tl message
 
   let report_and_close_flow flowpairs c flow message =
@@ -150,87 +150,86 @@ struct
     match result with
     | `Eof ->
       report_and_close_flow flowpairs c input_flow "Closing connection (eof)"
-    | `Error e -> report_and_close_flow flowpairs c input_flow (Flow.error_message e)
+    | `Error e ->
+      report_and_close_flow flowpairs c input_flow (Flow.error_message e)
     | `Ok buf ->
       write_with_check flowpairs c output_flow buf >>= fun () ->
       read_and_forward flowpairs c input_flow output_flow
 
-  let connect_socks context c s dest_server_port input_flow =
-    log c "New incoming connection - Forwarding connection through SOCKS";
-    Stack.T.create_connection
-      (Stack.tcpv4 s) (context.socks_ip, context.socks_port) >>= fun socks_con ->
-    match socks_con with
-    | `Error e ->
-      log c "Unable to connect to SOCKS server. Closing input flow. Error %s"
-        (Flow.error_message e);
-      Flow.close input_flow
-    | `Ok socks_flow ->
-      log c "Connected to SOCKS ip %s port %d"
-        (Ipaddr.V4.to_string (context.socks_ip)) context.socks_port;
-      context.flowpairs :=
-        [{incoming=input_flow; outgoing=`TCP socks_flow}] @ !(context.flowpairs);
-      log c "Connecting to dest ip %s port %d through SOCKS"
-        (Ipaddr.V4.to_string (context.dest_ip)) dest_server_port;
-      Socks.connect socks_flow "mirage" (context.dest_ip) dest_server_port
-      >>= fun result ->
-      match result with
-      | `Eof ->
-        report_and_close_flow context.flowpairs c (`TCP socks_flow)
-          "Eof while speaking to SOCKS"
-      | `Error e ->
-        log c "Connection through SOCKS failed";
-        report_and_close_flow context.flowpairs c (`TCP socks_flow) (Flow.error_message e)
-      | `Ok ->
-        log c "Connection succeeded. Forwarding.";
-        Lwt.choose [
-          read_and_forward context.flowpairs c input_flow (`TCP socks_flow);
-          read_and_forward context.flowpairs c (`TCP socks_flow) input_flow
-        ]
-
-  let tcp_flow c s dest_ip dest_port flowpairs =
-    log c "New incoming connection - Forwarding connection through TCP";
+  let tcp_flow c s dest_ip dest_port =
     log c "Establishing connection to %s:%d..."
       (Ipaddr.V4.to_string dest_ip) dest_port;
     Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= function
-    | `Error e        -> Lwt.return (`Error e)
-    | `Ok output_flow ->
-      log c "Connected to TCP ip %s port %d, forwarding..."
-        (Ipaddr.V4.to_string (dest_ip)) dest_port;
-      Lwt.return (`TCP output_flow)
+    | `Error e        -> Lwt.return (`Error (e :> Flow.error))
+    | `Ok output_flow -> Lwt.return (`TCP output_flow)
 
-  let connect_tcp c s dest_ip dest_port flowpairs incoming =
-    tcp_flow c s dest_ip dest_port flowpairs >>= function
+  let tls_flow c s dest_ip dest_port kv =
+    log c "Establishing connection to %s:%d..."
+      (Ipaddr.V4.to_string dest_ip) dest_port;
+    tcp_flow c s dest_ip dest_port >>= function
+    | `Error e         -> Lwt.return (`Error (e :> Flow.error))
+    | `TCP output_flow ->
+      log c "Connected to TCP ip %s port %d, negotiating TLS..."
+        (Ipaddr.V4.to_string (dest_ip)) dest_port;
+      X509.authenticator kv `Noop >>= fun authenticator ->
+      let conf = Tls.Config.client ~authenticator () in
+      TLS.client_of_flow conf "test" output_flow >>= function
+      | `Ok f    -> Lwt.return (`TLS f)
+      | `Error e -> Lwt.return (`Error (e :> Flow.error))
+
+  let connect_socks_fn c s dest_server_port context incoming =
+    log c "New incoming connection - Forwarding connection through SOCKS";
+    tcp_flow c s context.socks_ip context.socks_port >>= function
     | `Error e ->
-      log c "Unable to connect to TCP server. Closing input  flow. Error %s"
+      log c "Unable to connect to SOCKS server. Closing input flow. Error %s"
+        (Flow.error_message e);
+      Flow.close incoming
+    | `TCP socks_flow as outgoing ->
+      log c "Connected to SOCKS ip %s port %d"
+        (Ipaddr.V4.to_string (context.socks_ip)) context.socks_port;
+      context.flowpairs := [{incoming; outgoing}] @ !(context.flowpairs);
+      log c "Connecting to dest ip %s port %d through SOCKS"
+        (Ipaddr.V4.to_string (context.dest_ip)) dest_server_port;
+      Socks.connect socks_flow "mirage" (context.dest_ip) dest_server_port
+      >>= function
+      | `Eof ->
+        (* FIXME: close incoming ?*)
+        report_and_close_flow context.flowpairs c outgoing
+          "Eof while speaking to SOCKS"
+      | `Error e ->
+        log c "Connection through SOCKS failed";
+        (* FIXME: close incoming ?*)
+        report_and_close_flow context.flowpairs c outgoing
+          (Flow.error_message e)
+      | `Ok ->
+        log c "Connection succeeded. Forwarding.";
+        Lwt.choose [
+          read_and_forward context.flowpairs c incoming outgoing;
+          read_and_forward context.flowpairs c outgoing incoming
+        ]
+
+  let connect_tcp_fn c s dest_ip dest_port flowpairs incoming =
+    log c "New incoming connection - Forwarding connection through TCP";
+    tcp_flow c s dest_ip dest_port >>= function
+    | `Error e ->
+      log c "Unable to connect to TCP server. Closing input flow. Error: %s"
         (Flow.error_message e);
       Flow.close incoming
     | `TCP _ as outgoing ->
+      log c "Connected to TCP ip %s port %d, forwarding..."
+        (Ipaddr.V4.to_string (dest_ip)) dest_port;
       flowpairs := [{incoming; outgoing}] @ !flowpairs;
       Lwt.choose [
         read_and_forward flowpairs c incoming outgoing;
         read_and_forward flowpairs c outgoing incoming;
       ]
 
-  let tls_flow c s dest_ip dest_port flowpairs kv =
+  let connect_tls_fn c s kv dest_ip dest_port flowpairs incoming =
     log c "New incoming connection - Forwarding connection through TLS";
-    log c "Establishing connection to %s:%d..."
-      (Ipaddr.V4.to_string dest_ip) dest_port;
-    Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= function
-    | `Error e        -> Lwt.return (`Error e)
-    | `Ok output_flow ->
-      C.log c (Printf.sprintf "Connected to TCP ip %s port %d, negotiating TLS..."
-                 (Ipaddr.V4.to_string (dest_ip)) dest_port);
-      X509.authenticator kv `Noop >>= fun authenticator ->
-      let conf = Tls.Config.client ~authenticator () in
-      TLS.client_of_flow conf "test" output_flow >>= function
-      | `Ok f    -> Lwt.return (`TLS f)
-      | `Error _ -> fail (Failure "Error negotiating TLS (todo msg)")
-
-  let connect_tls c s dest_ip dest_port flowpairs kv incoming =
-    tls_flow  c s dest_ip dest_port flowpairs kv >>= function
+    tls_flow  c s dest_ip dest_port kv >>= function
     | `Error e ->
-      log c "Unable to connect to TCP server. Closing input \
-             flow. Error %s" (Flow.error_message e);
+      log c "Unable to connect to TLS server. Closing input flow. Error: %s"
+        (Flow.error_message e);
       Flow.close incoming
     | `TLS _ as outgoing ->
       flowpairs := [{incoming; outgoing}] @ !flowpairs;
@@ -241,54 +240,64 @@ struct
 
   (* from mirage-skeleton *)
   let or_error name fn t =
-    fn t
-    >>= function
+    fn t >>= function
     | `Error e -> fail (Failure ("Error starting " ^ name))
     | `Ok t -> return t
 
-  let accept_f c s port dest_ports kv bootvar =
-    let forward_mode =
-      let mode_str = (String.lowercase (Bootvar.get bootvar "forward_mode")) in
-      match mode_str with
-      | "tcp" -> `TCP
-      | "socks" -> `SOCKS
-      | "tls" -> `TLS
-      | _ -> `UNKNOWN
-    in
-    let socks_handler port flow =
-      (* set up context, socks config etc *)
-      let dest_ip =
-        Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip")
-      in
-      let socks_ip =
-        Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip")
-      in
-      let socks_port = int_of_string (Bootvar.get bootvar "socks_port") in
-      let context = {
-        socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip;
-        dest_ports = dest_ports; flowpairs = ref []
-      } in
-      connect_socks context c s port flow
-    in
-    let tcp_handler port flow =
-      let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-      let flowpairs = ref [] in
-      connect_tcp c s dest_ip port flowpairs flow
-    in
-    let tls_handler port flow =
-      let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-      let flowpairs = ref [] in
-      connect_tls c s dest_ip port flowpairs kv flow
-    in
-    match forward_mode with
-    | `SOCKS -> socks_handler port
-    | `TCP   -> tcp_handler port
-    | `TLS   -> tls_handler port
-    | `UNKNOWN -> (fun flow ->
-        fail (Failure "Forwarding mode unknown or the boot parameter \
-                       'forward_mode' was not set"))
+  let connect_socks ~socks_ip ~socks_port ~dest_ip ~dest_ports c s port flow =
+    (* set up context, socks config etc *)
+    let context = {
+      socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip;
+      dest_ports = dest_ports; flowpairs = ref [];
+    } in
+    connect_socks_fn c s port context flow
 
-  let start c n e kv =
+  let connect_tcp ~dest_ip c s port flow =
+    let flowpairs = ref [] in
+    connect_tcp_fn c s dest_ip port flowpairs flow
+
+  let connect_tls ~dest_ip ~kv c s port flow =
+    let flowpairs = ref [] in
+    connect_tls_fn c s kv dest_ip port flowpairs flow
+
+  type accept =
+    [ `Socks of (Ipaddr.V4.t * int * Ipaddr.V4.t)
+    | `Tcp of Ipaddr.V4.t
+    | `TLS of Ipaddr.V4.t * KV.t ]
+
+  let listen_mode bootvar =
+    let mode_str = String.lowercase (Bootvar.get bootvar "listen_mode") in
+    match mode_str with
+    | "tcp" -> `TCP
+    | "tls" -> `TLS
+    | "nat" -> `NAT
+    | s -> `UNKNOWN s
+
+  let forward_mode bootvar =
+    let mode_str = String.lowercase (Bootvar.get bootvar "forward_mode") in
+    match mode_str with
+    | "tcp" -> `TCP
+    | "socks" -> `SOCKS
+    | "tls" -> `TLS
+    | _ -> `UNKNOWN
+
+  let connect c s port dest_ports kv bootvar flow =
+    let ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
+    let dest_ip = ip "dest_ip" in
+    let socks_ip () = ip "socks_ip" in
+    let socks_port () = int_of_string (Bootvar.get bootvar "socks_port") in
+    match forward_mode bootvar with
+    | `SOCKS ->
+      let socks_ip = socks_ip () in
+      let socks_port = socks_port () in
+      connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port flow
+    | `TCP   -> connect_tcp ~dest_ip c s port flow
+    | `TLS   -> connect_tls ~dest_ip ~kv c s port flow
+    | `UNKNOWN ->
+        fail (Failure "Forwarding mode unknown or the boot parameter \
+                       'forward_mode' was not set")
+
+  let start c n_in n_out e kv =
     TLS.attach_entropy e >>= fun () ->
 
     (* show help on boot *)
@@ -296,9 +305,12 @@ struct
     Printf.printf "Accepted parameters in extra= are: \n";
     Printf.printf "\tforward_mode=[tcp,socks,tls]\n";
     Printf.printf "\tlisten_mode=[tcp,tls]\n";
-    Printf.printf "\tip=[local ip]\n";
-    Printf.printf "\tnetmask=[local netmask]\n";
-    Printf.printf "\tgw=[local gw]\n";
+    Printf.printf "\tip=[incoming local ip]\n";
+    Printf.printf "\tip-out=[outgoing local ip (=ip if not set)]\n";
+    Printf.printf "\tnetmask=[incoming local netmask]\n";
+    Printf.printf "\tnetmask-out=[outgoing local netmask (=netmask if not set)]\n";
+    Printf.printf "\tgw=[incoming local gw]\n";
+    Printf.printf "\tgw-out=[outgoing local gw (=gw if not set)]\n";
     Printf.printf "\tports=[port1,...portN] (ports to listen to)\n";
     Printf.printf "In socks forward mode:\n";
     Printf.printf "\tsocks_ip=[ipv4]\n";
@@ -309,69 +321,78 @@ struct
     Printf.printf "*****\n%!";
 
     Bootvar.create >>= fun bootvar ->
-    let ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip") in
-    let netmask = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
-    let gw = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in
-    (* set up stack *)
-    let stack_config = {
-      V1_LWT.name = "stack";
+    let ip_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip") in
+    let ip_out =
+      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip-out")
+      with Not_found -> ip_in
+    in
+    let netmask_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
+    let netmask_out =
+      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask-out")
+      with Not_found -> netmask_in
+    in
+    let gw_in = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in
+    let gw_out =
+      try Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw-out")
+      with Not_found -> gw_in
+    in
+    let stack_config1 = {
+      V1_LWT.name = "incoming-stack";
       V1_LWT.console = c;
-      V1_LWT.interface = n;
-      V1_LWT.mode = `IPv4 (ip, netmask, [gw]);
+      V1_LWT.interface = n_in;
+      V1_LWT.mode = `IPv4 (ip_in, netmask_in, [gw_in]);
     } in
-    or_error "stack" Stack.connect stack_config >>= fun s ->
+    let stack_config2 = {
+      V1_LWT.name = "outgoing-stack";
+      V1_LWT.console = c;
+      V1_LWT.interface = n_out;
+      V1_LWT.mode = `IPv4 (ip_out, netmask_out, [gw_out]);
+    } in
+    or_error "stack" Stack.connect stack_config1 >>= fun s1 ->
+    or_error "stack" Stack.connect stack_config2 >>= fun s2 ->
     let dest_ports =
       let ports =
         Re_str.(split (regexp_string ",") (Bootvar.get bootvar "ports"))
       in
       List.map int_of_string ports
     in
-    let listen_mode =
-      let mode_str = (String.lowercase (Bootvar.get bootvar "listen_mode")) in
-      match mode_str with
-      | "tcp" -> `TCP
-      | "tls" -> `TLS
-      | "nat-tls" -> `NAT `TLS
-      | "nat-tcp" -> `NAT `TCP
-      | s -> `UNKNOWN s
-    in
-    match listen_mode with
-    | `NAT x -> begin
+    match listen_mode bootvar with
+    | `NAT -> begin
         let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
         let port =  5162 in
-        let flowpairs = ref [] in
         let context = Nat.context bootvar in
-        begin match x with
-          | `TLS -> tls_flow c s dest_ip port flowpairs kv
-          | `TCP -> tcp_flow c s dest_ip port flowpairs
+        begin match forward_mode bootvar with
+          | `TLS -> tls_flow c s2 dest_ip port kv
+          | `TCP -> tcp_flow c s2 dest_ip port
+          | _ -> failwith "invalid forward mode for NAT mode."
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
-        | `TLS _ | `TCP _ as flow -> Nat.connect c context (`Net n) (`Flow flow)
+        | `TLS _ | `TCP _ as flow ->
+          Nat.connect c context (`Net n_in) (`Flow flow)
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
         let begin_listen port =
-          Stack.listen_tcpv4 s ~port:port
-            (fun flow -> accept_f c s port dest_ports kv bootvar (`TCP flow));
+          Stack.listen_tcpv4 s1 ~port:port
+            (fun flow -> connect c s2 port dest_ports kv bootvar (`TCP flow));
           Printf.printf "Listening to port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s
+        Stack.listen s1
       end
     | `TLS -> begin
         X509.certificate kv `Default >>= fun cert ->
         let conf = Tls.Config.server ~certificates:(`Single cert) () in
-
         (* listen to ports from dest_ports *)
         let begin_listen port =
-          Stack.listen_tcpv4 s ~port:port (fun flow ->
+          Stack.listen_tcpv4 s1 ~port:port (fun flow ->
               TLS.server_of_flow conf flow >>= function
-              |  `Ok tls -> accept_f c s port dest_ports kv bootvar (`TLS tls)
+              |  `Ok tls -> connect c s2 port dest_ports kv bootvar (`TLS tls)
               | `Error _ -> fail Not_found);
           Printf.printf "Listening to TLS, port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s
+        Stack.listen s1
       end
     | `UNKNOWN s -> raise (Failure (s ^ ": listen mode unknown"))
 end
