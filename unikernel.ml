@@ -58,21 +58,21 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
   }
 
   let close_flow = function
-        | `TLS flow -> TLS.close flow
-        | `TCP flow -> Stack.T.close flow
+    | `TLS flow -> TLS.close flow
+    | `TCP flow -> Stack.T.close flow
 
   type error = [TLS.error | Stack.T.error]
   type write_result = [ `Eof | `Ok of unit | `Error of error ]
   type read_result = [ `Eof | `Ok of Cstruct.t | `Error of error ]
 
   let write_flow flow buf =
-        match flow with
-        | `TLS flow -> (TLS.write flow buf :> write_result Lwt.t)
-        | `TCP flow -> (Stack.T.write flow buf :> write_result Lwt.t)
+    match flow with
+    | `TLS flow -> (TLS.write flow buf :> write_result Lwt.t)
+    | `TCP flow -> (Stack.T.write flow buf :> write_result Lwt.t)
 
   let read_flow = function
-        | `TLS flow -> (TLS.read flow :> read_result Lwt.t)
-        | `TCP flow -> (Stack.T.read flow :> read_result Lwt.t)
+    | `TLS flow -> (TLS.read flow :> read_result Lwt.t)
+    | `TCP flow -> (Stack.T.read flow :> read_result Lwt.t)
 
   let error_message e =
     match e with
@@ -162,9 +162,9 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
       C.log c (Printf.sprintf "Connected to TCP ip %s port %d, forwarding..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
       flowpairs := [{incoming=input_flow; outgoing=`TCP output_flow}] @ !(flowpairs);
       Lwt.choose [
-          read_and_forward flowpairs c input_flow (`TCP output_flow);
-          read_and_forward flowpairs c (`TCP output_flow) input_flow
-        ]
+        read_and_forward flowpairs c input_flow (`TCP output_flow);
+        read_and_forward flowpairs c (`TCP output_flow) input_flow
+      ]
 
   let connect_tls c s dest_ip dest_port flowpairs kv input_flow =
     C.log c "New incoming connection - Forwarding connection through TLS";
@@ -173,20 +173,20 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
     match dest_con with
     | `Error e -> C.log c (Printf.sprintf "Unable to connect to TCP server. Closing input flow. Error %s" (error_message e)); close_flow input_flow
     | `Ok output_flow ->
-        C.log c (Printf.sprintf "Connected to TCP ip %s port %d, negotiating TLS..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
-        X509.authenticator kv `Noop >>= fun authenticator ->
-        let conf = Tls.Config.client ~authenticator () in
-        TLS.client_of_flow conf "test" output_flow >>= fun tls ->
-        let output_flow =
-                match tls with
-                | `Ok f -> (`TLS f)
-                | `Error _ -> raise (Failure "Error negotiating TLS (todo msg)")
-        in
-        flowpairs := [{incoming=input_flow; outgoing=output_flow}] @ !(flowpairs);
-        Lwt.choose [
-          read_and_forward flowpairs c input_flow output_flow;
-          read_and_forward flowpairs c output_flow input_flow
-        ]
+      C.log c (Printf.sprintf "Connected to TCP ip %s port %d, negotiating TLS..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
+      X509.authenticator kv `Noop >>= fun authenticator ->
+      let conf = Tls.Config.client ~authenticator () in
+      TLS.client_of_flow conf "test" output_flow >>= fun tls ->
+      let output_flow =
+        match tls with
+        | `Ok f -> (`TLS f)
+        | `Error _ -> raise (Failure "Error negotiating TLS (todo msg)")
+      in
+      flowpairs := [{incoming=input_flow; outgoing=output_flow}] @ !(flowpairs);
+      Lwt.choose [
+        read_and_forward flowpairs c input_flow output_flow;
+        read_and_forward flowpairs c output_flow input_flow
+      ]
 
   (* from mirage-skeleton *)
   let or_error name fn t =
@@ -232,60 +232,60 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
       List.map int_of_string ports
     in
     let forward_mode =
-            let mode_str = (String.lowercase (Bootvar.get bootvar "forward_mode")) in
-            (if mode_str = "tcp" then `TCP
-            else if mode_str = "socks" then `SOCKS
-            else if mode_str = "tls" then `TLS
-            else `UNKNOWN) in
+      let mode_str = (String.lowercase (Bootvar.get bootvar "forward_mode")) in
+      (if mode_str = "tcp" then `TCP
+       else if mode_str = "socks" then `SOCKS
+       else if mode_str = "tls" then `TLS
+       else `UNKNOWN) in
     let accept_f c s port = begin
-            match forward_mode with
-            | `SOCKS -> begin
-                    (* set up context, socks config etc *)
-                    let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-                    let socks_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip") in
-                    let socks_port = int_of_string (Bootvar.get bootvar "socks_port") in
-                    let context : socks_t = { socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip; dest_ports = dest_ports; flowpairs = ref [] } in
-                    fun flow -> connect_socks context c s port flow
-            end
-            | `TCP ->
-                    let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-                    let flowpairs = ref [] in
-                    fun flow -> connect_tcp c s dest_ip port flowpairs flow
-            | `TLS ->
-                    let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-                    let flowpairs = ref [] in
-                    fun flow -> connect_tls c s dest_ip port flowpairs kv flow
-            | `UNKNOWN -> (fun flow -> fail (Failure "Forwarding mode unknown or the boot parameter 'forward_mode' was not set"))
+      match forward_mode with
+      | `SOCKS -> begin
+          (* set up context, socks config etc *)
+          let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
+          let socks_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip") in
+          let socks_port = int_of_string (Bootvar.get bootvar "socks_port") in
+          let context : socks_t = { socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip; dest_ports = dest_ports; flowpairs = ref [] } in
+          fun flow -> connect_socks context c s port flow
+        end
+      | `TCP ->
+        let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
+        let flowpairs = ref [] in
+        fun flow -> connect_tcp c s dest_ip port flowpairs flow
+      | `TLS ->
+        let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
+        let flowpairs = ref [] in
+        fun flow -> connect_tls c s dest_ip port flowpairs kv flow
+      | `UNKNOWN -> (fun flow -> fail (Failure "Forwarding mode unknown or the boot parameter 'forward_mode' was not set"))
     end in
     let listen_mode =
-            let mode_str = (String.lowercase (Bootvar.get bootvar "listen_mode")) in
-            (if mode_str = "tcp" then `TCP
-            else if mode_str = "tls" then `TLS
-            else `UNKNOWN) in
+      let mode_str = (String.lowercase (Bootvar.get bootvar "listen_mode")) in
+      (if mode_str = "tcp" then `TCP
+       else if mode_str = "tls" then `TLS
+       else `UNKNOWN) in
     match listen_mode with
     | `TCP -> begin
-                    (* listen to ports from dest_ports *)
-                    let begin_listen port =
-                        Stack.listen_tcpv4 s ~port:port (fun flow -> accept_f c s port (`TCP flow));
-                        Printf.printf "Listening to port %d\n" port
-                    in
-                    List.iter begin_listen (dest_ports);
-                    Stack.listen s
-              end
+        (* listen to ports from dest_ports *)
+        let begin_listen port =
+          Stack.listen_tcpv4 s ~port:port (fun flow -> accept_f c s port (`TCP flow));
+          Printf.printf "Listening to port %d\n" port
+        in
+        List.iter begin_listen (dest_ports);
+        Stack.listen s
+      end
     | `TLS -> begin
-                    X509.certificate kv `Default >>= fun cert ->
-                    let conf = Tls.Config.server ~certificates:(`Single cert) () in
+        X509.certificate kv `Default >>= fun cert ->
+        let conf = Tls.Config.server ~certificates:(`Single cert) () in
 
-                    (* listen to ports from dest_ports *)
-                    let begin_listen port =
-                        Stack.listen_tcpv4 s ~port:port (fun flow ->
-                                                TLS.server_of_flow conf flow >>= fun tls -> match tls with
-                                                `Ok tls ->
-                                                accept_f c s port (`TLS tls) | `Error _ -> fail Not_found);
-                        Printf.printf "Listening to TLS, port %d\n" port
-                    in
-                    List.iter begin_listen (dest_ports);
-                    Stack.listen s
-              end
+        (* listen to ports from dest_ports *)
+        let begin_listen port =
+          Stack.listen_tcpv4 s ~port:port (fun flow ->
+              TLS.server_of_flow conf flow >>= fun tls -> match tls with
+                `Ok tls ->
+                accept_f c s port (`TLS tls) | `Error _ -> fail Not_found);
+          Printf.printf "Listening to TLS, port %d\n" port
+        in
+        List.iter begin_listen (dest_ports);
+        Stack.listen s
+      end
     | `UNKNOWN -> raise (Failure "Listen mode unknown or the boot parameter 'listen_mode' was not set")
 end
