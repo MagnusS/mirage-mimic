@@ -58,21 +58,21 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
   }
 
   let close_flow = function
-	| `TLS flow -> TLS.close flow
-	| `TCP flow -> Stack.T.close flow
+        | `TLS flow -> TLS.close flow
+        | `TCP flow -> Stack.T.close flow
 
   type error = [TLS.error | Stack.T.error]
   type write_result = [ `Eof | `Ok of unit | `Error of error ]
   type read_result = [ `Eof | `Ok of Cstruct.t | `Error of error ]
 
   let write_flow flow buf =
-	match flow with
-	| `TLS flow -> (TLS.write flow buf :> write_result Lwt.t)
-	| `TCP flow -> (Stack.T.write flow buf :> write_result Lwt.t)
+        match flow with
+        | `TLS flow -> (TLS.write flow buf :> write_result Lwt.t)
+        | `TCP flow -> (Stack.T.write flow buf :> write_result Lwt.t)
 
   let read_flow = function
-	| `TLS flow -> (TLS.read flow :> read_result Lwt.t)
-	| `TCP flow -> (Stack.T.read flow :> read_result Lwt.t)
+        | `TLS flow -> (TLS.read flow :> read_result Lwt.t)
+        | `TCP flow -> (Stack.T.read flow :> read_result Lwt.t)
 
   let error_message e =
     match e with
@@ -108,7 +108,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
     | hd :: tl ->
       flowpairs := (drop_flowpair !(flowpairs) hd);
       Lwt.join [
-	close_flow hd.incoming ;
+        close_flow hd.incoming ;
         close_flow hd.outgoing ] >>= fun () ->
       report_and_close_pairs flowpairs c tl message
 
@@ -173,15 +173,15 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
     match dest_con with
     | `Error e -> C.log c (Printf.sprintf "Unable to connect to TCP server. Closing input flow. Error %s" (error_message e)); close_flow input_flow
     | `Ok output_flow ->
-      	C.log c (Printf.sprintf "Connected to TCP ip %s port %d, negotiating TLS..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
-	X509.authenticator kv `Noop >>= fun authenticator ->
-	let conf = Tls.Config.client ~authenticator () in
+        C.log c (Printf.sprintf "Connected to TCP ip %s port %d, negotiating TLS..." (Ipaddr.V4.to_string (dest_ip)) dest_port);
+        X509.authenticator kv `Noop >>= fun authenticator ->
+        let conf = Tls.Config.client ~authenticator () in
         TLS.client_of_flow conf "test" output_flow >>= fun tls ->
-	let output_flow =
-	        match tls with
-		| `Ok f -> (`TLS f)
-		| `Error _ -> raise (Failure "Error negotiating TLS (todo msg)")
-	in
+        let output_flow =
+                match tls with
+                | `Ok f -> (`TLS f)
+                | `Error _ -> raise (Failure "Error negotiating TLS (todo msg)")
+        in
         flowpairs := [{incoming=input_flow; outgoing=output_flow}] @ !(flowpairs);
         Lwt.choose [
           read_and_forward flowpairs c input_flow output_flow;
@@ -215,7 +215,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
     Printf.printf "\tdest_ip=[destination ipv4 relative to mimic]\n";
     Printf.printf "*****\n%!";
 
-    Bootvar.create >>= fun bootvar ->
+    Bootvar.create "ip=10.0.0.1 netmask=255.255.255.0 gw=10.0.0.255" >>= fun bootvar ->
     let ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "ip") in
     let netmask = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
     let gw = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in
@@ -253,7 +253,7 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
                     fun flow -> connect_tcp c s dest_ip port flowpairs flow
             | `TLS ->
                     let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
-		    let flowpairs = ref [] in
+                    let flowpairs = ref [] in
                     fun flow -> connect_tls c s dest_ip port flowpairs kv flow
             | `UNKNOWN -> (fun flow -> fail (Failure "Forwarding mode unknown or the boot parameter 'forward_mode' was not set"))
     end in
@@ -266,8 +266,8 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
     | `TCP -> begin
                     (* listen to ports from dest_ports *)
                     let begin_listen port =
-			Stack.listen_tcpv4 s ~port:port (fun flow -> accept_f c s port (`TCP flow));
-			Printf.printf "Listening to port %d\n" port
+                        Stack.listen_tcpv4 s ~port:port (fun flow -> accept_f c s port (`TCP flow));
+                        Printf.printf "Listening to port %d\n" port
                     in
                     List.iter begin_listen (dest_ports);
                     Stack.listen s
@@ -278,12 +278,12 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) (E : ENTROPY) (KV : KV_
 
                     (* listen to ports from dest_ports *)
                     let begin_listen port =
-			Stack.listen_tcpv4 s ~port:port (fun flow ->
-						TLS.server_of_flow conf flow >>= fun tls -> match tls with
-                   				`Ok tls ->
-						accept_f c s port (`TLS tls) | `Error _ -> fail Not_found);
-			Printf.printf "Listening to TLS, port %d\n" port
-		    in
+                        Stack.listen_tcpv4 s ~port:port (fun flow ->
+                                                TLS.server_of_flow conf flow >>= fun tls -> match tls with
+                                                `Ok tls ->
+                                                accept_f c s port (`TLS tls) | `Error _ -> fail Not_found);
+                        Printf.printf "Listening to TLS, port %d\n" port
+                    in
                     List.iter begin_listen (dest_ports);
                     Stack.listen s
               end
