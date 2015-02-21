@@ -162,16 +162,13 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
               (* add an entry as if our client had requested
                  something from the remote hosts sport, on its own
                  dport *)
-              match internal_client with
-              | None -> Lwt.return_unit (* THOMAS: is this righ? *)
-              | Some internal_client ->
-                match Nat_lookup.insert nat_table proto (V4 internal_client, dport) (src, sport)
-                        (V4 ip, dport) with
+              match Nat_lookup.insert nat_table proto (V4 internal_client, dport) (src, sport)
+                      (V4 ip, dport) with
+              | None -> Lwt.return_unit
+              | Some nat_table ->
+                match Nat_rewrite.translate nat_table direction frame with
+                | Some f -> Lwt.return (out_push (Some f))
                 | None -> Lwt.return_unit
-                | Some nat_table ->
-                  match Nat_rewrite.translate nat_table direction frame with
-                  | Some f -> Lwt.return (out_push (Some f))
-                  | None -> Lwt.return_unit
             )
           | _, _, _, _ -> Lwt.return_unit
         )
@@ -211,7 +208,7 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
       Lwt.return (`Net (nf, i))
     | `Flow f -> Lwt.return (`Flow f)
 
-  let connect c ?dest_ip ?(dest_ports=[]) ip pri sec =
+  let connect c ~ip ~dest_ip ~dest_ports pri sec =
 
     let (pri_in_queue, pri_in_push) = Lwt_stream.create () in
     let (pri_out_queue, pri_out_push) = Lwt_stream.create () in

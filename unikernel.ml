@@ -309,7 +309,7 @@ struct
       connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port incoming
     | `TCP -> connect_tcp ~dest_ip c s port incoming
     | `TLS -> connect_tls ~dest_ip ~kv c s port incoming
-    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ip (`Flow incoming) (`Net n)
+    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ~ip (`Flow incoming) (`Net n)
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
@@ -386,7 +386,9 @@ struct
                       (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
-        | #Nat.t as out -> Nat.connect c ip_out (`Net n_in) out
+        | #Nat.t as out ->
+          let dest_ports = dest_ports bootvar in
+          Nat.connect c ~ip:ip_in ~dest_ports ~dest_ip (`Net n_in) out
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
