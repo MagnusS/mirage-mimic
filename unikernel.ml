@@ -29,8 +29,7 @@ open Re_str
 
 module Main
     (C: V1_LWT.CONSOLE)
-    (Netif : V1_LWT.NETWORK)
-    (Netif_ : V1_LWT.NETWORK)
+    (Netif : V1_LWT.NETWORK with type id = string)
     (E : ENTROPY)
     (KV : KV_RO) =
 struct
@@ -165,8 +164,6 @@ struct
     | `Ok output_flow -> Lwt.return (`TCP output_flow)
 
   let tls_flow c s dest_ip dest_port kv =
-    log c "Establishing connection to %s:%d..."
-      (Ipaddr.V4.to_string dest_ip) dest_port;
     tcp_flow c s dest_ip dest_port >>= function
     | `Error e         -> Lwt.return (`Error (e :> Flow.error))
     | `TCP output_flow ->
@@ -314,18 +311,22 @@ struct
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
-  let start c n_in n_out e kv =
+  let start c _ e kv =
     TLS.attach_entropy e >>= fun () ->
 
     (* show help on boot *)
     Printf.printf "*** mirage-mimic supported boot options ***\n";
     Printf.printf "Accepted parameters in extra= are: \n";
-    Printf.printf "\tforward_mode=[tcp,socks,tls]\n";
-    Printf.printf "\tlisten_mode=[tcp,tls]\n";
+    Printf.printf "\tforward_mode=[nat,tcp,socks,tls]\n";
+    Printf.printf "\tlisten_mode=[nat,tcp,tls]\n";
+    Printf.printf "\tinterface=[id of the incomming interface]\n";
+    Printf.printf "\tinterface-out=[id of the outgoing interface \
+                   (=interface if not set)]\n";
     Printf.printf "\tip=[incoming local ip]\n";
     Printf.printf "\tip-out=[outgoing local ip (=ip if not set)]\n";
     Printf.printf "\tnetmask=[incoming local netmask]\n";
-    Printf.printf "\tnetmask-out=[outgoing local netmask (=netmask if not set)]\n";
+    Printf.printf "\tnetmask-out=[outgoing local netmask \
+                   (=netmask if not set)]\n";
     Printf.printf "\tgw=[incoming local gw]\n";
     Printf.printf "\tgw-out=[outgoing local gw (=gw if not set)]\n";
     Printf.printf "\tports=[port1,...portN] (ports to listen to)\n";
@@ -338,26 +339,29 @@ struct
     Printf.printf "*****\n%!";
 
     Bootvar.create >>= fun bootvar ->
-    let ips name =
-      let ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
+    let get fn name =
+      let ip name = fn (Bootvar.get bootvar name) in
       let ip_in = ip name in
       let ip_out = try ip (name ^ "-out") with Not_found -> ip_in in
       ip_in, ip_out
     in
+    let ips = get Ipaddr.V4.of_string_exn in
+    let intfs = get (fun x -> x) in
     let ip_in, ip_out = ips "ip" in
     let netmask_in, netmask_out = ips "netmask" in
     let gw_in, gw_out = ips "gw" in
+    let intf_in, intf_out = intfs "interface" in
+    or_error "Connecting to the incoming interface" Netif.connect intf_in
+    >>= fun n_in ->
+    or_error "Connecting to the outgoing interface" Netif.connect intf_out
+    >>= fun n_out ->
     let stack_config1 = {
-      V1_LWT.name = "incoming-stack";
-      V1_LWT.console = c;
-      V1_LWT.interface = n_in;
-      V1_LWT.mode = `IPv4 (ip_in, netmask_in, [gw_in]);
+      V1_LWT.name = "incoming-stack"; console = c; interface = n_in;
+      mode = `IPv4 (ip_in, netmask_in, [gw_in]);
     } in
     let stack_config2 = {
-      V1_LWT.name = "outgoing-stack";
-      V1_LWT.console = c;
-      V1_LWT.interface = n_out;
-      V1_LWT.mode = `IPv4 (ip_out, netmask_out, [gw_out]);
+      V1_LWT.name = "outgoing-stack"; console = c; interface = n_out;
+      mode = `IPv4 (ip_out, netmask_out, [gw_out]);
     } in
     or_error "stack" Stack.connect stack_config1 >>= fun s1 ->
     or_error "stack" Stack.connect stack_config2 >>= fun s2 ->
