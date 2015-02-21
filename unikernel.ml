@@ -87,7 +87,7 @@ struct
 
   end
 
-  module Nat = Nat.Make(C)(Netif)(Flow)
+  module Nat = Uni_nat.Make(C)(Netif)(Flow)
 
   type flowpair = {
     incoming : Flow.flow;
@@ -242,21 +242,21 @@ struct
     | `Error e -> fail "Error starting %s" name
     | `Ok t    -> return t
 
-  let connect_socks ~socks_ip ~socks_port ~dest_ip ~dest_ports c s port flow =
+  let connect_socks ~socks_ip ~socks_port ~dest_ip ~dest_ports c s port incoming =
     (* set up context, socks config etc *)
     let context = {
       socks_port = socks_port; socks_ip = socks_ip; dest_ip = dest_ip;
       dest_ports = dest_ports; flowpairs = ref [];
     } in
-    connect_socks_fn c s port context flow
+    connect_socks_fn c s port context incoming
 
-  let connect_tcp ~dest_ip c s port flow =
+  let connect_tcp ~dest_ip c s port incoming =
     let flowpairs = ref [] in
-    connect_tcp_fn c s dest_ip port flowpairs flow
+    connect_tcp_fn c s dest_ip port flowpairs incoming
 
-  let connect_tls ~dest_ip ~kv c s port flow =
+  let connect_tls ~dest_ip ~kv c s port incoming =
     let flowpairs = ref [] in
-    connect_tls_fn c s kv dest_ip port flowpairs flow
+    connect_tls_fn c s kv dest_ip port flowpairs incoming
 
   let listen_mode bootvar =
     let mode_str =
@@ -276,9 +276,10 @@ struct
       with Not_found -> None
     in
     match mode_str with
-    | Some "tcp"   -> `TCP
     | Some "socks" -> `SOCKS
+    | Some "tcp"   -> `TCP
     | Some "tls"   -> `TLS
+    | Some "nat"   -> `NAT
     | Some s       -> `UNKNOWN s
     | None         -> `NOT_SET
 
@@ -296,18 +297,19 @@ struct
     in
     List.map int_of_string ports
 
-  let connect c s port dest_ports kv bootvar flow =
-    let ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
-    let dest_ip = ip "dest_ip" in
-    let socks_ip () = ip "socks_ip" in
+  let connect c n s ip port dest_ports kv bootvar incoming =
+    let get_ip name = Ipaddr.V4.of_string_exn (Bootvar.get bootvar name) in
+    let dest_ip = get_ip "dest_ip" in
+    let socks_ip () = get_ip "socks_ip" in
     let socks_port () = int_of_string (Bootvar.get bootvar "socks_port") in
     match forward_mode bootvar with
     | `SOCKS ->
       let socks_ip = socks_ip () in
       let socks_port = socks_port () in
-      connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port flow
-    | `TCP -> connect_tcp ~dest_ip c s port flow
-    | `TLS -> connect_tls ~dest_ip ~kv c s port flow
+      connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port incoming
+    | `TCP -> connect_tcp ~dest_ip c s port incoming
+    | `TLS -> connect_tls ~dest_ip ~kv c s port incoming
+    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ~ip (`Flow incoming) (`Net n)
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
@@ -362,41 +364,43 @@ struct
     >>= fun n_in ->
     or_error "Connecting to the outgoing interface" Netif.connect intf_out
     >>= fun n_out ->
-    let stack_config1 = {
+    let stack_config_in = {
       V1_LWT.name = "incoming-stack"; console = c; interface = n_in;
       mode = `IPv4 (ip_in, netmask_in, [gw_in]);
     } in
-    let stack_config2 = {
+    let stack_config_out = {
       V1_LWT.name = "outgoing-stack"; console = c; interface = n_out;
       mode = `IPv4 (ip_out, netmask_out, [gw_out]);
     } in
-    or_error "stack" Stack.connect stack_config1 >>= fun s1 ->
-    or_error "stack" Stack.connect stack_config2 >>= fun s2 ->
+    or_error "stack" Stack.connect stack_config_in  >>= fun s_in  ->
+    or_error "stack" Stack.connect stack_config_out >>= fun s_out ->
     match listen_mode bootvar with
     | `NAT -> begin
         let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
         let port =  5162 in
-        let context = Nat.context bootvar in
         begin match forward_mode bootvar with
-          | `TLS -> tls_flow c s2 dest_ip port kv >|= flow
-          | `TCP -> tcp_flow c s2 dest_ip port    >|= flow
+          | `TLS -> tls_flow c s_out dest_ip port kv >|= flow
+          | `TCP -> tcp_flow c s_out dest_ip port    >|= flow
           | `NAT -> Lwt.return (`Net n_out)
           | x    -> fail "%s: invalid forward mode when listen_mode=NAT."
                       (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
-        | #Nat.t as out -> Nat.connect c context (`Net n_in) out
+        | #Nat.t as out ->
+          let dest_ports = dest_ports bootvar in
+          Nat.connect c ~ip:ip_in ~dest_ports ~dest_ip (`Net n_in) out
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
         let dest_ports = dest_ports bootvar in
         let begin_listen port =
-          Stack.listen_tcpv4 s1 ~port:port
-            (fun flow -> connect c s2 port dest_ports kv bootvar (`TCP flow));
+          Stack.listen_tcpv4 s_in ~port:port (fun flow ->
+              connect c n_out s_out ip_in port dest_ports kv bootvar (`TCP flow)
+            );
           Printf.printf "Listening to port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s1
+        Stack.listen s_in
       end
     | `TLS -> begin
         X509.certificate kv `Default >>= fun cert ->
@@ -404,14 +408,15 @@ struct
         let dest_ports = dest_ports bootvar in
         (* listen to ports from dest_ports *)
         let begin_listen port =
-          Stack.listen_tcpv4 s1 ~port:port (fun flow ->
+          Stack.listen_tcpv4 s_in ~port:port (fun flow ->
               TLS.server_of_flow conf flow >>= function
-              |  `Ok tls -> connect c s2 port dest_ports kv bootvar (`TLS tls)
-              | `Error e  -> fail "TLS error: %s" (Flow.error_message e));
+              |  `Ok tls ->
+                connect c n_out s_out ip_in port dest_ports kv bootvar (`TLS tls)
+              | `Error e -> fail "TLS error: %s" (Flow.error_message e));
           Printf.printf "Listening to TLS, port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s1
+        Stack.listen s_in
       end
     | `UNKNOWN s -> fail "%s: listen mode unknown" s
     | `NOT_SET   -> fail "'listen_mode' not set"
