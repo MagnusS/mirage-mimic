@@ -319,7 +319,8 @@ struct
     Printf.printf "Accepted parameters in extra= are: \n";
     Printf.printf "\tforward_mode=[nat,tcp,socks,tls]\n";
     Printf.printf "\tlisten_mode=[nat,tcp,tls]\n";
-    Printf.printf "\tinterface=[id of the incomming interface]\n";
+    Printf.printf "\tinterface=[id of the incomming interface \
+                   (=default interface if not set)]\n";
     Printf.printf "\tinterface-out=[id of the outgoing interface \
                    (=interface if not set)]\n";
     Printf.printf "\tip=[incoming local ip]\n";
@@ -346,7 +347,9 @@ struct
       ip_in, ip_out
     in
     let ips = get Ipaddr.V4.of_string_exn in
-    let intfs = get (fun x -> x) in
+    let intfs name =
+      try get (fun x -> x) name with Not_found -> "tap0", "tap0"
+    in
     let ip_in, ip_out = ips "ip" in
     let netmask_in, netmask_out = ips "netmask" in
     let gw_in, gw_out = ips "gw" in
