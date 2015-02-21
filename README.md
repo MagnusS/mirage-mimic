@@ -9,8 +9,8 @@ This code is experimental. Opam setup:
 opam pin add x509 --dev-repo
 opam pin add tls --dev-repo
 opam pin add conduit https://github.com/heidi-ann/ocaml-conduit#heidi-ann-patch-tls-interface -k git
-opan pin add arbitrary-network https://github.com/yomimono/arbitrary-network.git
-opan pin add mirage-nat https://github.com/yomimono/ocaml-nat.git
+opam pin add arbitrary-network https://github.com/yomimono/arbitrary-network.git
+opam pin add mirage-nat https://github.com/yomimono/ocaml-nat.git
 ```
 
 ### Build
