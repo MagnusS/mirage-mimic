@@ -311,6 +311,10 @@ struct
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
+  let flow = function
+    | `Error e        -> `Error e
+    | #Flow.flow as f -> `Flow f
+
   let start c _ e kv =
     TLS.attach_entropy e >>= fun () ->
 
@@ -374,14 +378,14 @@ struct
         let port =  5162 in
         let context = Nat.context bootvar in
         begin match forward_mode bootvar with
-          | `TLS -> tls_flow c s2 dest_ip port kv
-          | `TCP -> tcp_flow c s2 dest_ip port
-          | x    -> fail "%s: invalid forward mode the NAT mode."
+          | `TLS -> tls_flow c s2 dest_ip port kv >|= flow
+          | `TCP -> tcp_flow c s2 dest_ip port    >|= flow
+          | `NAT -> Lwt.return (`Net n_out)
+          | x    -> fail "%s: invalid forward mode when listen_mode=NAT."
                       (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
-        | `TLS _ | `TCP _ as flow ->
-          Nat.connect c context (`Net n_in) (`Flow flow)
+        | #Nat.t as out -> Nat.connect c context (`Net n_in) out
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
