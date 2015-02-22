@@ -87,7 +87,7 @@ struct
 
   end
 
-  module Nat = Uni_nat.Make(C)(Netif)(Flow)
+  module Nat = Uni_nat.Make(C)(Netif)(Stack.I)(Flow)
 
   type flowpair = {
     incoming : Flow.flow;
@@ -309,7 +309,7 @@ struct
       connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port incoming
     | `TCP -> connect_tcp ~dest_ip c s port incoming
     | `TLS -> connect_tls ~dest_ip ~kv c s port incoming
-    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ~ip (`Flow incoming) (`Net n)
+    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ~ip ~flow_ip:None (`Flow incoming) (`Net n)
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
@@ -381,21 +381,21 @@ struct
         begin match forward_mode bootvar with
           | `TLS -> tls_flow c s_out dest_ip port kv >|= flow
           | `TCP -> tcp_flow c s_out dest_ip port    >|= flow
-          | `NAT -> Lwt.return (`Net n_out)
+          | `NAT -> Lwt.return (`Net (n_out, Stack.ipv4 s_out)) 
           | x    -> fail "%s: invalid forward mode when listen_mode=NAT."
                       (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
         | #Nat.t as out ->
           let dest_ports = dest_ports bootvar in
-          Nat.connect c ~ip:ip_in ~dest_ports ~dest_ip (`Net n_in) out
+          Nat.connect c ~ip:ip_in ~flow_ip:(Some ip_out) ~dest_ports ~dest_ip (`Net (n_in, Stack.ipv4 s_in)) out
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
         let dest_ports = dest_ports bootvar in
         let begin_listen port =
           Stack.listen_tcpv4 s_in ~port:port (fun flow ->
-              connect c n_out s_out ip_in port dest_ports kv bootvar (`TCP flow)
+              connect c (n_out, Stack.ipv4 s_out) s_out ip_in port dest_ports kv bootvar (`TCP flow)
             );
           Printf.printf "Listening to port %d\n" port
         in
@@ -411,7 +411,7 @@ struct
           Stack.listen_tcpv4 s_in ~port:port (fun flow ->
               TLS.server_of_flow conf flow >>= function
               |  `Ok tls ->
-                connect c n_out s_out ip_in port dest_ports kv bootvar (`TLS tls)
+                connect c (n_out, Stack.ipv4 s_out) s_out ip_in port dest_ports kv bootvar (`TLS tls)
               | `Error e -> fail "TLS error: %s" (Flow.error_message e));
           Printf.printf "Listening to TLS, port %d\n" port
         in

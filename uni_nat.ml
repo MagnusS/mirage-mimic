@@ -22,10 +22,9 @@ open Ipaddr
 let (>>=) = Lwt.bind
 let (>>|) = Lwt.map
 
-module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
+module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.FLOW) = struct
 
   module E = Ethif.Make(N)
-  module I = Ipv4.Make(E)
   type direction = Nat_rewrite.direction
   module Channel = Channel.Make(F)
 
@@ -49,10 +48,10 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
     N.listen (E.id nf)
       (fun frame ->
          match (Wire_structs.get_ethernet_ethertype frame) with
-         | 0x0806 -> I.input_arpv4 i frame
+         | 0x0806 -> 
+           I.input_arpv4 i frame
          | _ ->
-           push (Some frame);
-           Lwt.return_unit)
+           Lwt.return (push (Some frame)))
 
   let listen_flow flow push =
     let rec aux ic =
@@ -123,7 +122,33 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
     | `Net (_, i) -> write_net i
     | `Flow f -> write_flow f
 
-  let allow_traffic table frame ip =
+  (* filter allows clients on the internal side to send any traffic to
+    the NAT's IP and a forwarding port.  It allows any return traffic back to
+     the local network. *)
+  let filter nat_table external_ip fwd_dports internal_client direction in_queue out_push =
+    let rec filter frame =
+      match direction with
+      | Destination ->
+        (* TODO: this will leak broadcast traffic *)
+        Lwt.return (out_push (Some frame))
+      | Source ->
+        (* check dst, dport vs external_ip, fwd_dport and send any matching
+           frames to out_push with no alterations made *)
+        (* TODO: really we should be checking proto too, but we don't get that
+          in bootvars at the moment *)
+        match Nat_rewrite.((ips_of_frame frame), (ports_of_frame frame)) with
+        | Some (_, frame_dst), Some (_, frame_dport)
+          when (frame_dst = (V4 external_ip)) && (List.mem frame_dport fwd_dports) ->
+          Lwt.return (out_push (Some frame))
+        | _ -> Lwt.return_unit
+
+    in
+    let rec loop () =
+      Lwt_stream.next in_queue >>= filter >>= loop
+    in
+    loop ()
+
+  let allow_nat_traffic table frame ip =
     let rec stubborn_insert table frame ip port = match port with
       (* TODO: in the unlikely event that no port is available, this
          function will never terminate *)
@@ -133,7 +158,7 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
       | n when n < 1024 ->
         stubborn_insert table frame ip (Random.int 65535)
       | n ->
-        match Nat_rewrite.make_entry table frame ip n with
+        match Nat_rewrite.make_nat_entry table frame ip n with
         | Ok t -> Some t
         | Unparseable ->
           None
@@ -143,40 +168,77 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
     (* TODO: connection tracking logic *)
     stubborn_insert table frame ip (Random.int 65535)
 
-  let shovel ip fwd_dports internal_client direction in_queue out_push =
-    let nat_table = Nat_lookup.empty () in
+  (* other_ip means the IP held by the NAT device on the interface which *isn't*
+     the one that received this traffic *)
+  let allow_rewrite_traffic table frame other_ip client_ip fwd_port =
+    let rec stubborn_insert table frame other_ip client_ip fwd_port xl_port = 
+      match xl_port with
+      | n when n < 1024 -> stubborn_insert table frame other_ip client_ip 
+                             fwd_port (Random.int 65535)
+      | n ->
+        match Nat_rewrite.make_redirect_entry table frame (other_ip, n)
+                (client_ip, fwd_port)
+        with
+        | Ok t -> Some t
+        | Unparseable -> None
+        | Overlap -> stubborn_insert table frame other_ip client_ip 
+                       fwd_port (Random.int 65535)
+    in
+    stubborn_insert table frame other_ip client_ip fwd_port (Random.int 65535)
+
+  let redirect nat_table (ip : Ipaddr.V4.t) flow_ip fwd_dports internal_client direction in_queue out_push =
+    let rec frame_wrapper frame =
+     match direction, Nat_rewrite.translate nat_table direction frame with
+      | Destination, None ->  (
+          (* if this isn't return traffic from an outgoing request, check to see
+             whether it's traffic we know we should forward on to internal_client
+             because of preconfigured port forward mappings
+          *)
+          let (my_ip, other_ip) = flow_ip, ip in (* known because we already
+                                          matched on Direction = Destination *)
+          match Nat_rewrite.((ips_of_frame frame), (ports_of_frame frame),
+                             (proto_of_frame frame)) with
+          | Some (frame_src, frame_dst), Some (frame_sport, frame_dport), Some proto
+            when (frame_dst = (V4 my_ip) && List.mem frame_dport fwd_dports) -> ( (*
+	      Printf.printf "will attempt to add an entry for this packet going to %s %d" (Ipaddr.to_string frame_dst) frame_dport;
+              Printf.printf "\n table now: %s" (Nat_lookup.string_of_t nat_table); *)
+              (* rewrite traffic to come from our other interface and go to the
+                 preconfigured client IP *)
+              match allow_rewrite_traffic nat_table frame (V4 other_ip) (V4 internal_client)
+                      frame_dport with
+              | None -> Lwt.return_unit
+              | Some nat_table ->
+                (* Printf.printf "\n table after allowing frame: %s" (Nat_lookup.string_of_t nat_table); *)
+                match Nat_rewrite.translate nat_table direction frame with
+                | None -> Lwt.return_unit
+                | Some f -> (* Printf.printf "yay, off we go"; *)
+                    Lwt.return (out_push (Some f)) 
+            )
+          | Some (src, dst), Some (sport, dport), Some proto -> Lwt.return_unit
+          | _, _, _ -> Lwt.return_unit
+      )
+      | Source, None -> (* Printf.printf "lol no"; *)
+          Lwt.return_unit (* drop this packet, since we can't know where to send it *)
+      | _, Some f -> Lwt.return (out_push (Some f))
+      in
+    let rec loop () =
+      Lwt_stream.next in_queue >>=
+      frame_wrapper >>=
+      loop
+    in
+    loop ()
+
+  let shovel nat_table (ip : Ipaddr.V4.t) fwd_dports internal_client direction in_queue out_push =
     let rec frame_wrapper frame =
       (* typical NAT logic: traffic from the internal "trusted" interface gets
          new mappings by default; traffic from other interfaces gets dropped if
          no mapping exists (which it doesn't, since we already checked) *)
       match direction, Nat_rewrite.translate nat_table direction frame with
-      | Destination, None ->   (
-          (* if this isn't return traffic from an outgoing request, check to see
-             whether it's traffic we know we should forward on to internal_client
-             because of preconfigured port forward mappings
-          *)
-          match Nat_rewrite.((ips_of_frame frame), (ports_of_frame frame),
-                             (proto_of_frame frame), (layers frame)) with
-          | Some (src, dst), Some (sport, dport), Some proto, Some (f, ip_layer, tx_layer)
-            when dst = V4 ip && List.mem dport fwd_dports -> (
-              (* add an entry as if our client had requested
-                 something from the remote hosts sport, on its own
-                 dport *)
-              match Nat_lookup.insert nat_table proto (V4 internal_client, dport) (src, sport)
-                      (V4 ip, dport) with
-              | None -> Lwt.return_unit
-              | Some nat_table ->
-                match Nat_rewrite.translate nat_table direction frame with
-                | Some f -> Lwt.return (out_push (Some f))
-                | None -> Lwt.return_unit
-            )
-          | _, _, _, _ -> Lwt.return_unit
-        )
       | _, Some f ->
         Lwt.return (out_push (Some f))
       | Source, None ->
         (* mutate nat_table to include entries for the frame *)
-        match allow_traffic nat_table frame (V4 ip) with
+        match allow_nat_traffic nat_table frame (V4 ip) with
         | Some t ->
           (* try rewriting again; we should now have an entry for this packet *)
           frame_wrapper frame
@@ -199,31 +261,45 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
       C.log_s c (Printf.sprintf "%s connected." name) >>= fun () ->
       Lwt.return t
 
-  type t = [ `Net of N.t | `Flow of F.flow ]
+  type t = [ `Net of (N.t * I.t) | `Flow of F.flow ]
 
   let create c = function
-    | `Net e ->
-      or_error c "primary interface" E.connect e >>= fun nf ->
-      or_error c "ip for primary interface" I.connect nf >>= fun i ->
+    | `Net (e, i) ->
+      or_error c "interface" E.connect e >>= fun nf ->
       Lwt.return (`Net (nf, i))
     | `Flow f -> Lwt.return (`Flow f)
 
-  let connect c ~ip ~dest_ip ~dest_ports pri sec =
+  let connect c ~(ip : Ipaddr.V4.t) ~flow_ip ~dest_ip ~dest_ports pri sec =
+
+    let table = Nat_lookup.empty () in
 
     let (pri_in_queue, pri_in_push) = Lwt_stream.create () in
     let (pri_out_queue, pri_out_push) = Lwt_stream.create () in
     let (sec_in_queue, sec_in_push) = Lwt_stream.create () in
     let (sec_out_queue, sec_out_push) = Lwt_stream.create () in
 
+    let local_side_transform_fn = function
+    | `Net _, `Flow _ -> filter table ip dest_ports dest_ip
+    (* | `Net _, `Net _ -> shovel table ip dest_ports dest_ip *)
+    | `Net _ , `Net _  
+    | `Flow _, `Net _ ->  
+        match flow_ip with
+        | None -> raise (Invalid_argument "NAT asked to translate traffic between two IPs, but was only given one")
+        | Some flow_ip -> redirect table ip flow_ip dest_ports dest_ip 
+    (* `Flow f, `Flow f deliberately omitted; such a combination shouldn't involve uni_nat *)
+    in
+
     (* initialize interfaces *)
     create c pri >>= fun pri ->
     create c sec >>= fun sec ->
+
+C.log c "interfaces initialized; starting traffic transformation";
 
     Lwt.join [
       (* packet intake *)
       listen pri pri_in_push;
       listen sec sec_in_push;
-
+      
       (* TODO: ICMP, at least on our own behalf *)
 
       (* address translation *)
@@ -231,11 +307,12 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
          examples, which is an "external" world-facing interface),
          rewrite destination addresses/ports before sending packet out
          the second interface *)
-      shovel ip dest_ports dest_ip Destination pri_in_queue sec_out_push;
+      (* forwarding behavior depends on the combination of pri and sec selected *)
+      (local_side_transform_fn (pri, sec)) Destination pri_in_queue sec_out_push;
 
       (* for packets received on xenbr1 ("internal"), rewrite source address/port
            before sending packets out the primary interface *)
-      shovel ip dest_ports dest_ip Source sec_in_queue pri_out_push;
+      (local_side_transform_fn (pri, sec)) Source sec_in_queue pri_out_push;
 
       (* packet output *)
       write pri pri_out_queue;

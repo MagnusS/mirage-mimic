@@ -16,13 +16,13 @@
  *
  *)
 
-module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW): sig
+module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.FLOW): sig
 
-  type t = [ `Net of N.t | `Flow of F.flow ]
+  type t = [ `Net of (N.t * I.t) | `Flow of F.flow ]
   (** The type for endpoints. *)
 
   val connect: C.t ->
-    ip:Ipaddr.V4.t -> dest_ip:Ipaddr.V4.t -> dest_ports:int list ->
+    ip:Ipaddr.V4.t -> flow_ip:Ipaddr.V4.t option -> dest_ip:Ipaddr.V4.t -> dest_ports:int list ->
     t -> t -> unit Lwt.t
   (** Connect two endpoint using NAT. *)
 
