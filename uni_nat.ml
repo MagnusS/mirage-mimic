@@ -194,12 +194,12 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.
              whether it's traffic we know we should forward on to internal_client
              because of preconfigured port forward mappings
           *)
-          let (my_ip, other_ip) = flow_ip, ip in (* known because we already
+          let (my_ip, other_ip) = ip, flow_ip in (* known because we already
                                           matched on Direction = Destination *)
           match Nat_rewrite.((ips_of_frame frame), (ports_of_frame frame),
                              (proto_of_frame frame)) with
           | Some (frame_src, frame_dst), Some (frame_sport, frame_dport), Some proto
-            when (frame_dst = (V4 my_ip) && List.mem frame_dport fwd_dports) -> ( (*
+            when (frame_dst = (V4 my_ip) && List.mem frame_dport fwd_dports) ->  ( (*
 	      Printf.printf "will attempt to add an entry for this packet going to %s %d" (Ipaddr.to_string frame_dst) frame_dport;
               Printf.printf "\n table now: %s" (Nat_lookup.string_of_t nat_table); *)
               (* rewrite traffic to come from our other interface and go to the
@@ -207,17 +207,20 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.
               match allow_rewrite_traffic nat_table frame (V4 other_ip) (V4 internal_client)
                       frame_dport with
               | None -> Lwt.return_unit
-              | Some nat_table ->
-                (* Printf.printf "\n table after allowing frame: %s" (Nat_lookup.string_of_t nat_table); *)
+              | Some nat_table -> (*
+                Printf.printf "\n table after allowing frame: %s" (Nat_lookup.string_of_t nat_table); *)
                 match Nat_rewrite.translate nat_table direction frame with
                 | None -> Lwt.return_unit
-                | Some f -> (* Printf.printf "yay, off we go"; *)
+                | Some f -> (* Printf.printf "yay, off we go";  *)
                     Lwt.return (out_push (Some f)) 
             )
-          | Some (src, dst), Some (sport, dport), Some proto -> Lwt.return_unit
+          | Some (src, dst), Some (sport, dport), Some proto ->  (*
+Printf.printf "packet in right direction, but not a match (%s %d %s %d)\n" (Ipaddr.to_string src) sport (Ipaddr.to_string dst) dport;
+Printf.printf "%s would've matched\n" (Ipaddr.to_string (V4 flow_ip)); *)
+Lwt.return_unit
           | _, _, _ -> Lwt.return_unit
       )
-      | Source, None -> (* Printf.printf "lol no"; *)
+      | Source, None -> 
           Lwt.return_unit (* drop this packet, since we can't know where to send it *)
       | _, Some f -> Lwt.return (out_push (Some f))
       in
@@ -279,10 +282,10 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.
     let (sec_out_queue, sec_out_push) = Lwt_stream.create () in
 
     let local_side_transform_fn = function
-    | `Net _, `Flow _ -> filter table ip dest_ports dest_ip
+    | `Net _, `Flow _ -> (* Printf.printf "filter";*)filter table ip dest_ports dest_ip
     (* | `Net _, `Net _ -> shovel table ip dest_ports dest_ip *)
     | `Net _ , `Net _  
-    | `Flow _, `Net _ ->  
+    | `Flow _, `Net _ -> (* Printf.printf "redirect";*)
         match flow_ip with
         | None -> raise (Invalid_argument "NAT asked to translate traffic between two IPs, but was only given one")
         | Some flow_ip -> redirect table ip flow_ip dest_ports dest_ip 
