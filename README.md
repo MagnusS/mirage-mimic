@@ -6,8 +6,10 @@ This unikernel mimics a host in another network by acquiring a local IP address,
 This code is experimental. Opam setup:
 
 ```
+opam remote add mirage-dev git://github.com/mirage/mirage-dev
 opam pin add x509 --dev-repo
 opam pin add tls --dev-repo
+opam pin add ctypes https://github.com/ocamllabs/ocaml-ctypes.git
 opam pin add conduit https://github.com/heidi-ann/ocaml-conduit#heidi-ann-patch-tls-interface -k git
 opam pin add arbitrary-network https://github.com/yomimono/arbitrary-network.git
 opam pin add mirage-nat https://github.com/yomimono/ocaml-nat.git
