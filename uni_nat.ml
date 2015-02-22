@@ -133,7 +133,7 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
       | n when n < 1024 ->
         stubborn_insert table frame ip (Random.int 65535)
       | n ->
-        match Nat_rewrite.make_entry table frame ip n with
+        match Nat_rewrite.make_nat_entry table frame ip n with
         | Ok t -> Some t
         | Unparseable ->
           None
@@ -163,7 +163,7 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (F: V1_LWT.FLOW) = struct
                  something from the remote hosts sport, on its own
                  dport *)
               match Nat_lookup.insert nat_table proto (V4 internal_client, dport) (src, sport)
-                      (V4 ip, dport) with
+                      (V4 ip, dport) (V4 ip, dport) with
               | None -> Lwt.return_unit
               | Some nat_table ->
                 match Nat_rewrite.translate nat_table direction frame with
