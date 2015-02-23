@@ -317,6 +317,11 @@ struct
     | `Error e        -> `Error e
     | #Flow.flow as f -> `Flow f
 
+  let im_ready c =
+    let key = "data/status" and value = "ready" in
+    OS.Xs.make () >>= fun xs ->
+    OS.Xs.(immediate xs (fun h -> write h key value))
+
   let start c _ e kv =
     TLS.attach_entropy e >>= fun () ->
 
@@ -388,7 +393,11 @@ struct
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
         | #Nat.t as out ->
           let dest_ports = dest_ports bootvar in
-          Nat.connect c ~ip:ip_in ~flow_ip:(Some ip_out) ~dest_ports ~dest_ip (`Net (n_in, Stack.ipv4 s_in)) out
+          let nat_connect ()  =
+	    Nat.connect c ~ip:ip_in ~flow_ip:(Some ip_out) ~dest_ports ~dest_ip
+	      (`Net (n_in, Stack.ipv4 s_in)) out
+	  in
+	  Lwt.join [ im_ready c; nat_connect ()]
       end
     | `TCP -> begin
         (* listen to ports from dest_ports *)
@@ -400,7 +409,7 @@ struct
           Printf.printf "Listening to port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s_in
+        Lwt.join [ im_ready c; Stack.listen s_in]
       end
     | `TLS -> begin
         X509.certificate kv `Default >>= fun cert ->
@@ -416,7 +425,7 @@ struct
           Printf.printf "Listening to TLS, port %d\n" port
         in
         List.iter begin_listen (dest_ports);
-        Stack.listen s_in
+	Lwt.join [ im_ready c; Stack.listen s_in]
       end
     | `UNKNOWN s -> fail "%s: listen mode unknown" s
     | `NOT_SET   -> fail "'listen_mode' not set"
