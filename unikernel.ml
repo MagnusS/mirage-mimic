@@ -157,11 +157,12 @@ struct
       read_and_forward flowpairs c input_flow output_flow
 
   let tcp_flow c s dest_ip dest_port =
-    log c "Establishing connection to %s:%d..."
-      (Ipaddr.V4.to_string dest_ip) dest_port;
-    Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= function
-    | `Error e        -> Lwt.return (`Error (e :> Flow.error))
-    | `Ok output_flow -> Lwt.return (`TCP output_flow)
+    log c "Establishing connection to %s on port %d" (Ipaddr.V4.to_string dest_ip)
+      dest_port;
+    (OS.Time.sleep 0.1) >>= function () ->
+      Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= function
+      | `Error e        -> Lwt.return (`Error (e :> Flow.error))
+      | `Ok output_flow -> Lwt.return (`TCP output_flow)
 
   let tls_flow c s dest_ip dest_port kv =
     tcp_flow c s dest_ip dest_port >>= function
@@ -309,7 +310,8 @@ struct
       connect_socks ~dest_ip ~socks_ip ~socks_port ~dest_ports c s port incoming
     | `TCP -> connect_tcp ~dest_ip c s port incoming
     | `TLS -> connect_tls ~dest_ip ~kv c s port incoming
-    | `NAT -> Nat.connect c ~dest_ports ~dest_ip ~ip ~flow_ip:None (`Flow incoming) (`Net n)
+    | `NAT -> Nat.connect c ~dest_ports ~dest_ip:(Ipaddr.V4 dest_ip)
+                ~ip:(Ipaddr.V4 ip) ~flow_ip:None (`Flow incoming) (`Net n)
     | `UNKNOWN s -> fail "%s: forwarding mode unknown" s
     | `NOT_SET   -> fail "'forward_mode' is not set"
 
@@ -380,19 +382,25 @@ struct
         let port =  5162 in
         begin match forward_mode bootvar with
           | `TLS -> tls_flow c s_out dest_ip port kv >|= flow
-          | `TCP -> tcp_flow c s_out dest_ip port    >|= flow
-          | `NAT -> Lwt.return (`Net (n_out, Stack.ipv4 s_out)) 
+          | `TCP -> tcp_flow c s_out dest_ip port    >|= flow (* don't start natting 'til we have a connection to send traffic over *)
+          | `NAT -> Lwt.return (`Net (n_out, Stack.ipv4 s_out))
           | x    -> fail "%s: invalid forward mode when listen_mode=NAT."
                       (string_of_mode x)
         end >>= function
         | `Error e -> log c "Error: %s" (Flow.error_message e); Lwt.return_unit
         | #Nat.t as out ->
           let dest_ports = dest_ports bootvar in
-          Nat.connect c ~ip:ip_in ~flow_ip:(Some ip_out) ~dest_ports ~dest_ip (`Net (n_in, Stack.ipv4 s_in)) out
+          C.log c "Beginning inbound NAT mode.";
+          C.log c (Printf.sprintf "Listening on %s." (Ipaddr.V4.to_string ip_in));
+          Nat.connect c ~ip:(Ipaddr.V4 ip_in) ~flow_ip:(Some (Ipaddr.V4 ip_out))
+            ~dest_ports ~dest_ip:(Ipaddr.V4 dest_ip) (`Net (n_in, Stack.ipv4 s_in)) out
       end
     | `TCP -> begin
-        (* listen to ports from dest_ports *)
-        let dest_ports = dest_ports bootvar in
+        let dest_ports =
+          match forward_mode bootvar with
+          | `NAT -> [ 5162 ] (* all traffic tunneled over 5162 in this case *)
+          | `TLS | `TCP | `SOCKS -> dest_ports bootvar
+        in
         let begin_listen port =
           Stack.listen_tcpv4 s_in ~port:port (fun flow ->
               connect c (n_out, Stack.ipv4 s_out) s_out ip_in port dest_ports kv bootvar (`TCP flow)
