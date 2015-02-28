@@ -22,7 +22,7 @@ module Make (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (I: V1_LWT.IPV4) (F: V1_LWT.
   (** The type for endpoints. *)
 
   val connect: C.t ->
-    ip:Ipaddr.V4.t -> flow_ip:Ipaddr.V4.t option -> dest_ip:Ipaddr.V4.t -> dest_ports:int list ->
+    ip:Ipaddr.t -> flow_ip:Ipaddr.t option -> dest_ip:Ipaddr.t -> dest_ports:int list ->
     t -> t -> unit Lwt.t
   (** Connect two endpoint using NAT. *)
 
