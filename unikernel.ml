@@ -159,7 +159,6 @@ struct
   let tcp_flow c s dest_ip dest_port =
     log c "Establishing connection to %s on port %d" (Ipaddr.V4.to_string dest_ip)
       dest_port;
-    (OS.Time.sleep 0.1) >>= function () ->
       Stack.T.create_connection (Stack.tcpv4 s) (dest_ip, dest_port) >>= function
       | `Error e        -> Lwt.return (`Error (e :> Flow.error))
       | `Ok output_flow -> Lwt.return (`TCP output_flow)
