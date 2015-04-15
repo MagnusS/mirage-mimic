@@ -31,8 +31,8 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
   module Stack = struct
     module E = Ethif.Make(Netif)
     module I = Ipv4.Make(E)
-    module U = Udpv4.Make(I)
-    module T = Tcpv4.Flow.Make(I)(OS.Time)(Clock)(Random)
+    module U = Udp.Make(I)
+    module T = Tcp.Flow.Make(I)(OS.Time)(Clock)(Random)
     module S = Tcpip_stack_direct.Make(C)(OS.Time)(Random)(Netif)(E)(I)(U)(T)
     include S
   end
@@ -132,6 +132,19 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     | `Error e -> fail (Failure ("Error starting " ^ name))
     | `Ok t -> return t 
 
+  let create_stack c netif ip_config =
+    or_error "ethif" Stack.E.connect netif >>= fun ethif ->
+    or_error "ipv4" Stack.I.connect ethif >>= fun ipv4 ->
+    or_error "udpv4" Stack.U.connect ipv4 >>= fun udpv4 ->
+    or_error "tcpv4" Stack.T.connect ipv4 >>= fun tcpv4 ->
+    let config = {
+        V1_LWT.name = "stack";
+        V1_LWT.console = c;
+        V1_LWT.interface = netif;
+        V1_LWT.mode = ip_config;
+    } in
+    or_error "stack" (Stack.connect config ethif ipv4 udpv4) tcpv4
+
   let start c n = 
     Printf.printf "Accepted parameters in extra= are: socks_ip=[ipv4] socks_port=[port] dest_ip=[ipv4 relative to socks endpoint] dest_ports=[port1,port2...] ip=[local ip] netmask=[local netmask] gw=[local gw]\n";
     let bootvar = Bootvar.create in
@@ -139,13 +152,8 @@ module Main (C: V1_LWT.CONSOLE) (Netif : V1_LWT.NETWORK) = struct
     let netmask = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "netmask") in
     let gw = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "gw") in
     (* set up stack *)
-    let stack_config = {
-      V1_LWT.name = "stack";
-      V1_LWT.console = c; 
-      V1_LWT.interface = n;
-      V1_LWT.mode = `IPv4 (ip, netmask, [gw]);
-    } in
-    or_error "stack" Stack.connect stack_config >>= fun s ->
+    let ip_config = `IPv4 (ip, netmask, [gw]) in 
+    create_stack c n ip_config >>= fun s -> 
     (* set up context, socks config etc *)
     let dest_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "dest_ip") in
     let socks_ip = Ipaddr.V4.of_string_exn (Bootvar.get bootvar "socks_ip") in
